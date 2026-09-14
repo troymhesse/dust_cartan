@@ -1,0 +1,135 @@
+use std::*
+
+port num_particles = 10000
+port inner_r = 2.0
+port outer_r = 10.0
+port dt = 0.1
+port G = 1
+port M = 1
+m = M / num_particles
+port a = 1
+port mass_ratio = 1.0
+port ev = vec(0.5, 0.0)
+port golden_angle = 137.5 * pi / 180
+state physics_state = none
+state central_object = "binary"
+
+
+initial_pos = for i in 0..num_particles {
+    pow := 1
+    r := outer_r * (i / num_particles)^pow + inner_r
+    hash := mod(i * (12345 + i), 2001) / 10000.0
+    angle_jitter := hash * 2.0 * pi
+    phi := (i * golden_angle) + angle_jitter
+
+    x := r * cos(phi)
+    y := r * sin(phi)
+    vec(x, y)
+}
+
+initial_vel = for vec(x, y) in initial_pos {
+    r := sqrt(x^2 + y^2)
+    omega := sqrt(G * M / r^3)
+    omega * vec(-y, x)
+}
+
+initial_state = {
+    time: 0.0
+    pos: initial_pos
+    vel: initial_vel
+    mpos: mass_pos(0.0)
+}
+
+f(x, e, mean_anom) = x - e * sin(x) - mean_anom
+ecc_anom(t) = {
+    e := norm(ev)
+    mean_anom := sqrt(G * M / a^3) * t
+    iters := fold x := mean_anom for k in 0..24 while abs(f(x, e, mean_anom)) > 1e-10 { x - f(x, e, mean_anom) / f(:x, e, mean_anom) }
+    
+    iters[rel(-1)]
+}
+
+mass_pos(t) = {
+    if central_object == "single" then {
+        array([vec(0.0, 0.0), vec(0.0, 0.0)])
+    }
+    else if central_object == "binary" then {
+        anom := ecc_anom(t)
+        e := norm(ev)
+        x := a * (cos(anom) - e)
+        y := a * sqrt(1 - e * e) * sin(anom)
+        # Secondary position
+        x2 := - x / (1.0 + mass_ratio)
+        y2 := - y / (1.0 + mass_ratio)
+        # Primary position
+        x1 := - x2 * mass_ratio
+        y1 := - y2 * mass_ratio
+        array([vec(x1, y1), vec(x2, y2)])
+    }
+}
+
+potential(x, y) = {
+    if central_object == "single" then {
+        - G * M / sqrt(x^2 + y^2)
+    }
+    else if central_object == "binary" then {
+        r1 := physics_state["mpos"][0]
+        r2 := physics_state["mpos"][1]
+        p1 := vec(x, y) - r1
+        p2 := vec(x, y) - r2
+        M1 := M / (1.0 + mass_ratio)
+        M2 := mass_ratio * M1
+
+        - G * M1 / norm(p1) - G * M2 / norm(p2)
+    }
+}
+
+acceleration(vec(x, y)) = {
+    ax := -potential(:x, y)
+    ay := -potential(x, :y)
+    vec(ax, ay)
+}
+
+advance(s) = {
+    { time, pos, vel, mpos } := s
+
+    acc1 := acceleration(pos)
+    vel1 := vel + 0.5 * acc1 * dt
+
+    pos1 := pos + vel1 * dt
+
+    acc2 := acceleration(pos1)
+    vel2 := vel1 + 0.5 * acc2 * dt
+    {
+        time: time + dt
+        pos: pos1
+        vel: vel2
+        mpos: mass_pos(time + dt)
+    }
+}
+
+
+while physics_state == none {
+    physics_state <- initial_state
+}
+
+
+every 0.01 {
+    physics_state <- advance(physics_state)
+}
+
+
+lim = outer_r * 1.5
+main = block {
+    canvas2d([-lim, lim], [-lim, lim]): { aspect: "equal" } {
+        points(physics_state["pos"]): { size: 3, color: rgb(0.8, 0.8, 0.8) }
+        points(physics_state["mpos"]): { size: 15, color: rgb(1.0, 0.9, 0.0) }
+    }
+    block {
+        text(central_object)
+    } with tap {
+        central_object <- "single" 
+        # else if central_object == "single" then {central_object <- "binary"}
+    }
+    knob(mass_ratio, [0.0, 1.0])
+}

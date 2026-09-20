@@ -13,13 +13,13 @@ struct State = {
     mpos: Array<Vector<Real, 3>, 1>
 }
 
-param cam = Camera(vec(0, 0, 0), rot([0, pi/2, 0]), 15)
+param cam = Camera(vec(0.0, 0.0, 0.0), rot([0.0, 1.5708, 0.0]), 20)
 
-param num_particles = 20000
+param num_particles = 2
 param inner_r = 2.5
-param outer_r = 10.0
+param outer_r = 5.0
 param eps = 0.001
-param dt = 0.1
+param dt = 0.001
 param G = 1
 param M = 1
 m = 1.0 * M / num_particles
@@ -28,13 +28,13 @@ param mass_ratio = 0.2
 param ev = vec(0.5, 0.0)
 param golden_angle = 137.5 * pi / 180
 state physics_state: State|None = none
-state central_object = "binary"
+state central_object = "single"
 
 # fiber CentralObject = (Binary: Int | Single: Int)
 
 init_particles = for i in 0..num_particles {
     # Calculate initial positions
-    pow := 2
+    pow := 1
     r := outer_r * (i / num_particles)^pow + inner_r
     hash := mod(i * (12345 + i), 2001) / 10000.0
     angle_jitter := hash * 2.0 * pi
@@ -49,12 +49,20 @@ init_particles = for i in 0..num_particles {
 
     Particle(m, vec(x,y,z), vec(vx,vy,vz))
 }
+
+# sides = [1, -1]
+# init_particles = for i in 0..num_particles {
+#     x := sides[i]
+#     vy := sqrt(G * 2 * m / (sides[0] - sides[1])) / num_particles * sides[i]
+#     Particle(m, vec(x,0,0), vec(0,vy,0))
+# }
+
 p0 = init_particles
 
 initial_state: State = {
     time: 0.0
     particles: p0
-    acc: acceleration(pos of p0, mass_pos(0.0))
+    acc: interaction_acceleration(p0) + central_acceleration(pos of p0, mass_pos(0.0))
     mpos: mass_pos(0.0)
 }
 
@@ -63,9 +71,8 @@ f(x, e, mean_anom) = x - e * sin(x) - mean_anom
 ecc_anom(t) = {
     e := norm(ev)
     mean_anom := sqrt(G * M / a^3) * t
-    iters := fold x := mean_anom for k in 0..24 while abs(f(x, e, mean_anom)) > 1e-10 { x - f(x, e, mean_anom) / f(:x, e, mean_anom) }
-    
-    iters[0 of upper(space(iters)) - 1]
+    result := reduce x := mean_anom for k in 0..24 while abs(f(x, e, mean_anom)) > 1e-10 { x - f(x, e, mean_anom) / f(:x, e, mean_anom) }
+    result
 }
 
 mass_pos(t) = {
@@ -105,11 +112,35 @@ potential(x, y, z, mpos) = {
     }
 }
 
-acceleration(vec(x, y, z), mpos) = {
+central_acceleration(vec(x, y, z), mpos) = {
     ax := -potential(:x, y, z, mpos)
     ay := -potential(x, :y, z, mpos)
     az := -potential(x, y, :z, mpos)
     vec(ax, ay, az)
+}
+
+# p1 is 'source particle' in terms of direction of r_sep
+two_body_force(p1: Particle, p2: Particle) = {
+    m1 := m of p1
+    m2 := m of p2
+    r_sep := (pos of p2) - (pos of p1)
+    - G * m1 * m2 * r_sep / (dot(r_sep, r_sep) + eps^2)^(3/2)
+}
+
+interaction_acceleration(particles) = {
+    acc := 0.0 * reshape(pos of p0, extent(num_particles, 1))
+    new_acc := reduce acc1 := acc for i in 0..num_particles-1 {
+        reduce acc2 := acc1 for j in i+1..num_particles {
+            force := two_body_force(particles[i], particles[j])
+
+            acc2 
+            but (
+                (i,0): acc2[site(i,0)] - force / (m of particles[i]), 
+                (j,0): acc2[site(j,0)] + force / (m of particles[j])
+            )
+        }
+    }
+    reshape(new_acc, extent(num_particles))
 }
 
 advance(s) = {
@@ -123,7 +154,7 @@ advance(s) = {
 
     pos_next := pos + vel_half * dt
 
-    acc_next := acceleration(pos_next, mpos_next)
+    acc_next := interaction_acceleration(particles) + central_acceleration(pos_next, mpos_next)
     vel_next := vel_half + 0.5 * acc_next * dt
 
     {
@@ -135,14 +166,16 @@ advance(s) = {
 }
 
 
-# energy(p: Particle) = {
-#     r := pos of p
-#     v := vel of p
-#     0.5 * dot(v, v) - 
-# }
+energy(parts) = {
+    r := pos of parts
+    v := vel of parts
+    ms := m of parts
+    r_sep := norm(r[1] - r[0])
+    0.5 * ms[0] * dot(v[0], v[0]) + 0.5 * ms[1] * dot(v[1], v[1]) - G * ms[0] * ms[1] /r_sep
+}
 
 
-every 0.01 {
+while true {
     physics_state <- if physics_state == none then initial_state else advance(physics_state)
 } 
 

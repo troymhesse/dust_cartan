@@ -13,16 +13,16 @@ struct State = {
     mpos: Array<Vector<Real, 3>, 1>
 }
 
-param cam = Camera(vec(0.0, 0.0, 0.0), rot([0.0, 1.5708, 0.0]), 20)
+param cam = Camera(vec(0.0, 0.0, 0.0), rot([0.0, 1.5708, 0.0]), 12)
 
-param num_particles = 2
+param num_particles = 200
 param inner_r = 2.5
 param outer_r = 5.0
-param eps = 0.001
-param dt = 0.001
+param eps = 0.01
+param dt = 0.05
 param G = 1
 param M = 1
-m = 1.0 * M / num_particles
+m = 3.0 * M / num_particles^2 # Mass of particles based on Maxwell ring stability condition
 param a = 1
 param mass_ratio = 0.2
 param ev = vec(0.5, 0.0)
@@ -31,6 +31,22 @@ state physics_state: State|None = none
 state central_object = "single"
 
 # fiber CentralObject = (Binary: Int | Single: Int)
+
+# Ring test
+# init_particles = for i in 0..num_particles {
+#     # Calculate initial positions
+#     r := 5.0
+#     phi := 2 * pi * i / num_particles
+#     x := r * cos(phi)
+#     y := r * sin(phi)
+#     z := 0.0
+#     # Calculate initial velocities
+#     omega := sqrt(G * M / r^3)
+#     vec(vx, vy) := omega * vec(-y, x)
+#     vz := 0.0
+
+#     Particle(m, vec(x,y,z), vec(vx,vy,vz))
+# }
 
 init_particles = for i in 0..num_particles {
     # Calculate initial positions
@@ -50,10 +66,11 @@ init_particles = for i in 0..num_particles {
     Particle(m, vec(x,y,z), vec(vx,vy,vz))
 }
 
+# 2-body test
 # sides = [1, -1]
 # init_particles = for i in 0..num_particles {
 #     x := sides[i]
-#     vy := sqrt(G * 2 * m / (sides[0] - sides[1])) / num_particles * sides[i]
+#     vy := sqrt(G * (m + m) / (sides[0] - sides[1])) / 2 * sides[i]
 #     Particle(m, vec(x,0,0), vec(0,vy,0))
 # }
 
@@ -96,7 +113,7 @@ mass_pos(t) = {
     }
 }
 
-potential(x, y, z, mpos) = {
+central_potential(x, y, z, mpos) = {
     if central_object == "single" then {
         - G * M / sqrt(x^2 + y^2 + z^2 + eps^2)
     }
@@ -113,9 +130,9 @@ potential(x, y, z, mpos) = {
 }
 
 central_acceleration(vec(x, y, z), mpos) = {
-    ax := -potential(:x, y, z, mpos)
-    ay := -potential(x, :y, z, mpos)
-    az := -potential(x, y, :z, mpos)
+    ax := -central_potential(:x, y, z, mpos)
+    ay := -central_potential(x, :y, z, mpos)
+    az := -central_potential(x, y, :z, mpos)
     vec(ax, ay, az)
 }
 
@@ -153,8 +170,8 @@ advance(s) = {
     vel_half := vel + 0.5 * acc * dt
 
     pos_next := pos + vel_half * dt
-
-    acc_next := interaction_acceleration(particles) + central_acceleration(pos_next, mpos_next)
+    particles_half := Particle(m, pos_next, vel_half)
+    acc_next := interaction_acceleration(particles_half) + central_acceleration(pos_next, mpos_next)
     vel_next := vel_half + 0.5 * acc_next * dt
 
     {
@@ -166,13 +183,17 @@ advance(s) = {
 }
 
 
-energy(parts) = {
+energy(parts, mpos) = {
     r := pos of parts
     v := vel of parts
     ms := m of parts
-    r_sep := norm(r[1] - r[0])
-    0.5 * ms[0] * dot(v[0], v[0]) + 0.5 * ms[1] * dot(v[1], v[1]) - G * ms[0] * ms[1] /r_sep
+
+    kinetic := 0.5 * ms * dot(v, v)
+    potential := central_potential(0 of r, 1 of r, 2 of r, mpos)
+    
+    sum(kinetic + potential)
 }
+
 
 
 while true {
@@ -183,11 +204,13 @@ plot_state = if physics_state == none then initial_state else physics_state
 
 star_size = 30 * vec(1, mass_ratio^(1/3))
 orbits = canvas3d : { camera: cam } {
-    points(pos of (plot_state["particles"])) : { size: 3, color: rgb(0.8, 0.8, 0.8) }
+    points(pos of (plot_state["particles"])) : { size: 5, color: rgb(0.8, 0.8, 0.8) }
     points(plot_state["mpos"][0..1]) : { size: 0 of star_size, color: rgb(1.0, 0.9, 0.0) }
     if central_object == "binary" then points(plot_state["mpos"][1..2]) : { size: 1 of star_size, color: rgb(1.0, 0.9 * mass_ratio, 0.0) } 
-    } with orbit(cam) with dolly(cam)
+} with orbit(cam) with dolly(cam)
+
 
 main = block {
     orbits
+    text("ΔE/|E|: " <> fmt( (energy(plot_state["particles"], plot_state["mpos"]) - energy(p0, initial_state["mpos"])) / abs(energy(p0, initial_state["mpos"]))))
 }
